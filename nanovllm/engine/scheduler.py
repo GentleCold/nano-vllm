@@ -20,6 +20,7 @@ class Scheduler:
         self.waiting: deque[Sequence] = deque()
         self.running: deque[Sequence] = deque()
         self.first = True
+        self._recent_text_id: int | None = None
 
     def is_finished(self):
         with self._lock:
@@ -27,11 +28,38 @@ class Scheduler:
 
     def add(self, seq: Sequence):
         with self._lock:
+            if self.waiting and seq.text_id is not None:
+                waiting_list = list(self.waiting)
+                insert_idx = None
+                for i in range(len(waiting_list) - 1, -1, -1):
+                    if waiting_list[i].text_id == seq.text_id:
+                        insert_idx = i + 1
+                        break
+                if insert_idx is None and self._recent_text_id == seq.text_id:
+                    insert_idx = 0
+                if insert_idx is not None:
+                    waiting_list.insert(insert_idx, seq)
+                    self.waiting = deque(waiting_list)
+                    return
             self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
         with self._lock:
         # prefill
+            if self.waiting and self._recent_text_id is not None:
+                waiting_list = list(self.waiting)
+                try:
+                    idx = next(
+                        i for i, seq in enumerate(waiting_list)
+                        if seq.text_id == self._recent_text_id
+                    )
+                except StopIteration:
+                    self._recent_text_id = None
+                else:
+                    if idx != 0:
+                        seq = waiting_list.pop(idx)
+                        waiting_list.insert(0, seq)
+                        self.waiting = deque(waiting_list)
             scheduled_seqs = []
             num_seqs = 0
             num_batched_tokens = 0
@@ -47,6 +75,12 @@ class Scheduler:
                 self.running.append(seq)
                 scheduled_seqs.append(seq)
             if scheduled_seqs:
+                for seq in scheduled_seqs:
+                    if seq.text_id is not None:
+                        self._recent_text_id = seq.text_id
+                        break
+                else:
+                    self._recent_text_id = None
                 return scheduled_seqs, True
 
             # decode
