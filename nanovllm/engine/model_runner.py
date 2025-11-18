@@ -137,10 +137,13 @@ class ModelRunner:
             seqlen = len(seq)
             start_q = seq.num_cached_tokens
             end_q = seqlen
+
             input_ids.extend(seq[seq.num_cached_tokens:])
             positions.extend(list(range(seq.num_cached_tokens, seqlen)))
+            
             seqlen_q = seqlen - seq.num_cached_tokens
-            seqlen_k = seqlen
+            seqlen_k = seqlen_q
+            
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
@@ -157,7 +160,6 @@ class ModelRunner:
                     token_types.append(1)
                     task_len += 1
 
-            # 记录每条序列 task token 长度
             if task_len > 0:
                 cu_seqlens_task_q.append(cu_seqlens_task_q[-1] + task_len)
                 
