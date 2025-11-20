@@ -57,7 +57,7 @@ class LLMEngine:
         else:
             raise TypeError(f"Unsupported prompt type: {type(text)}")
 
-        seq = Sequence(token_ids, sampling_params, task_start=task_start)
+        seq = Sequence(token_ids, task_start, sampling_params)
         self.scheduler.add(seq)
 
     def step(self):
