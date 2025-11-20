@@ -5,6 +5,8 @@ from time import perf_counter
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 import torch.multiprocessing as mp
+import torch
+from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
 
 from nanovllm.config import Config
 from nanovllm.sampling_params import SamplingParams
@@ -74,40 +76,90 @@ class LLMEngine:
         prompts: list[str | dict],
         sampling_params: SamplingParams | list[SamplingParams],
         use_tqdm: bool = True,
-    ) -> list[dict]:
+    ) -> list[dict]:    
         if use_tqdm:
             pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
-            if not isinstance(sampling_params, list):
-                sampling_params = [sampling_params] * len(prompts)
-
-            for prompt, sp in zip(prompts, sampling_params):
-                self.add_request(prompt, sp)
-                if use_tqdm:
-                    pbar.update(0)
-                    
+        
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
+        
+        for prompt, sp in zip(prompts, sampling_params):
+            self.add_request(prompt, sp)
+        
         outputs = {}
-        prefill_throughput = decode_throughput = 0.
+        step_count = 0
         start_time = perf_counter()
-        while not self.is_finished():
-            t = perf_counter()
-            output, num_tokens = self.step()
-            if use_tqdm:
-                if num_tokens > 0:
-                    prefill_throughput = num_tokens / (perf_counter() - t)
-                else:
-                    decode_throughput = -num_tokens / (perf_counter() - t)
-                pbar.set_postfix({
-                    "Prefill": f"{int(prefill_throughput)}tok/s",
-                    "Decode": f"{int(decode_throughput)}tok/s",
-                })
-            for seq_id, token_ids in output:
-                outputs[seq_id] = token_ids
-                if use_tqdm:
-                    pbar.update(1)
+        
+        with profile(
+            activities=[
+                ProfilerActivity.CPU,
+                ProfilerActivity.CUDA,
+            ],
+            schedule=schedule(
+                wait=1,      # 跳过前1步
+                warmup=1,    # 预热1步（不记录）
+                active=5,    # 记录5步
+                repeat=1
+            ),
+            on_trace_ready=tensorboard_trace_handler('./logs'),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            with_flops=True,
+            with_modules=True,
+        ) as prof:
+            
+            try:
+                while not self.is_finished():
+                    step_count += 1
+                    
+                    with record_function(f"## step_{step_count} ##"):
+                        step_start = perf_counter()
+                        
+                        with record_function("model_step"):
+                            output, num_tokens = self.step()
+                        
+                        step_time = perf_counter() - step_start
+                        
+                        # 更新进度条
+                        if use_tqdm:
+                            if num_tokens > 0:
+                                throughput = num_tokens / step_time
+                                pbar.set_postfix({
+                                    "Prefill": f"{int(throughput)}tok/s",
+                                    "StepTime": f"{step_time*1000:.1f}ms"
+                                })
+                            else:
+                                throughput = -num_tokens / step_time
+                                pbar.set_postfix({
+                                    "Decode": f"{int(throughput)}tok/s",
+                                    "StepTime": f"{step_time*1000:.1f}ms"
+                                })
+                        
+                        # 收集输出
+                        for seq_id, token_ids in output:
+                            outputs[seq_id] = token_ids
+                            if use_tqdm:
+                                pbar.update(1)
+                    
+                    # 通知profiler完成一步
+                    prof.step()
+                    
+            except Exception as e:
+                print(f"生成过程中出错: {e}")
+                raise
+        
+        # 计算总时间
         end_time = perf_counter()
-        print(f"总时间: {(end_time - start_time)*1000:.2f}ms")
+        total_time = end_time - start_time
+        print("总时间", total_time)
+        
+        # 处理输出
         outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
-        outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs]
+        outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} 
+                for token_ids in outputs]
+        
         if use_tqdm:
             pbar.close()
+        
         return outputs
