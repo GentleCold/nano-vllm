@@ -10,6 +10,7 @@ from nanovllm.layers.layernorm import RMSNorm
 from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from nanovllm.utils.context import timer
 
 class Qwen3Attention(nn.Module):
 
@@ -80,15 +81,16 @@ class Qwen3Attention(nn.Module):
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         q, k = self.rotary_emb(positions, q, k)
         
-        # torch.cuda.synchronize()
-        # start_time = time.perf_counter()
+        torch.cuda.synchronize()
+        start_time = time.perf_counter()
         if token_types is not None and layerid > 18:
             previous_q_ready = hidden_states.view(-1, self.num_heads, self.head_dim)
             o = self.attn(q, k, v, token_types, previous_q_ready)
         else:
             o = self.attn(q, k, v, token_types, None)
-        # torch.cuda.synchronize()
-        # end_time = time.perf_counter()
+        torch.cuda.synchronize()
+        end_time = time.perf_counter()
+        timer.add_time("flash_attn", end_time - start_time)
         # print(f"{layerid}时间: {(end_time - start_time)*1000:.2f}ms")
         output = self.o_proj(o.flatten(1, -1))
         return output

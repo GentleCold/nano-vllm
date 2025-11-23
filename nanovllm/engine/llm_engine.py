@@ -13,7 +13,7 @@ from nanovllm.sampling_params import SamplingParams
 from nanovllm.engine.sequence import Sequence
 from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.model_runner import ModelRunner
-
+from nanovllm.utils.context import timer
 
 class LLMEngine:
 
@@ -88,6 +88,7 @@ class LLMEngine:
         
         outputs = {}
         step_count = 0
+        timer.reset()
         start_time = perf_counter()
         
         with profile(
@@ -153,6 +154,7 @@ class LLMEngine:
         end_time = perf_counter()
         total_time = end_time - start_time
         print("总时间", total_time)
+        timer.print_stats()
         
         # 处理输出
         outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
