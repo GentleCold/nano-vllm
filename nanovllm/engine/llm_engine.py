@@ -91,64 +91,23 @@ class LLMEngine:
         timer.reset()
         start_time = perf_counter()
         
-        with profile(
-            activities=[
-                ProfilerActivity.CPU,
-                ProfilerActivity.CUDA,
-            ],
-            schedule=schedule(
-                wait=1,      # 跳过前1步
-                warmup=1,    # 预热1步（不记录）
-                active=5,    # 记录5步
-                repeat=1
-            ),
-            on_trace_ready=tensorboard_trace_handler('./logs'),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True,
-            with_flops=True,
-            with_modules=True,
-        ) as prof:
-            
-            try:
-                while not self.is_finished():
-                    step_count += 1
-                    
-                    with record_function(f"## step_{step_count} ##"):
-                        step_start = perf_counter()
-                        
-                        with record_function("model_step"):
-                            output, num_tokens = self.step()
-                        
-                        step_time = perf_counter() - step_start
-                        
-                        # 更新进度条
-                        if use_tqdm:
-                            if num_tokens > 0:
-                                throughput = num_tokens / step_time
-                                pbar.set_postfix({
-                                    "Prefill": f"{int(throughput)}tok/s",
-                                    "StepTime": f"{step_time*1000:.1f}ms"
-                                })
-                            else:
-                                throughput = -num_tokens / step_time
-                                pbar.set_postfix({
-                                    "Decode": f"{int(throughput)}tok/s",
-                                    "StepTime": f"{step_time*1000:.1f}ms"
-                                })
-                        
-                        # 收集输出
-                        for seq_id, token_ids in output:
-                            outputs[seq_id] = token_ids
-                            if use_tqdm:
-                                pbar.update(1)
-                    
-                    # 通知profiler完成一步
-                    prof.step()
-                    
-            except Exception as e:
-                print(f"生成过程中出错: {e}")
-                raise
+        prefill_throughput = decode_throughput = 0.
+        while not self.is_finished():
+            t = perf_counter()
+            output, num_tokens = self.step()
+            if use_tqdm:
+                if num_tokens > 0:
+                    prefill_throughput = num_tokens / (perf_counter() - t)
+                else:
+                    decode_throughput = -num_tokens / (perf_counter() - t)
+                pbar.set_postfix({
+                    "Prefill": f"{int(prefill_throughput)}tok/s",
+                    "Decode": f"{int(decode_throughput)}tok/s",
+                })
+            for seq_id, token_ids in output:
+                outputs[seq_id] = token_ids
+                if use_tqdm:
+                    pbar.update(1)
         
         # 计算总时间
         end_time = perf_counter()
